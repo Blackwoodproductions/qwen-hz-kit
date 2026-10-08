@@ -1,0 +1,79 @@
+---
+# Akash SDL — r11 humanizer "kit" (Qwen2.5-7B r11 + judge, 6-draft + fact-check + judge pipeline)
+# Deploy via Akash Console (console.akash.network) → paste this → pick a bid → lease.
+# Fill the 4 <PLACEHOLDERS> below; everything else is sensible defaults.
+#   1) image        — the kit container you build+push (GHCR/Docker Hub). NEVER :latest.
+#   2) HF_TOKEN      — HuggingFace token to pull SEOlocal/qwen-hz-node (r11) + the judge.
+#   3) JUDGE_MODEL   — the judge model ref the boot script loads.
+#   4) KIT_API_KEY   — a long random secret; the endpoint is PUBLIC, so it MUST require this.
+version: "2.0"
+
+services:
+  humanizer-kit:
+    # The kit image: Ollama (or vLLM) + the 6-draft/fact-check/judge orchestrator + boot script that
+    # loads BOTH models and starts the judge, exposing an HTTP API on :8000.
+    image: <REGISTRY>/qwen-hz-kit:r11          # e.g. ghcr.io/seolocal/qwen-hz-kit:r11  (pin a real tag)
+    env:
+      # ---- models ----
+      - HF_TOKEN=<HUGGINGFACE_TOKEN>            # pulls SEOlocal/qwen-hz-node (r11, digest 2bf392d4afae) + judge
+      - HZ_MODEL=SEOlocal/qwen-hz-node          # the r11 humanizer
+      - JUDGE_MODEL=<JUDGE_MODEL_REF>           # the judge the kit loads
+      # ---- kit pipeline knobs ----
+      - DRAFTS_PER_CHUNK=6                       # 6 candidate rewrites per chunk
+      - FACTCHECK=on                             # fact-check filter before judging
+      - JUDGE=on                                 # judge selects the best surviving draft
+      # ---- Ollama runtime (both models resident, 6-way draft concurrency) ----
+      - OLLAMA_MAX_LOADED_MODELS=2               # r11 + judge loaded together (the 4090's MAX=1 was the blocker)
+      - OLLAMA_NUM_PARALLEL=6                    # serve the 6 drafts concurrently
+      - OLLAMA_KEEP_ALIVE=-1                     # pin models — no cold reload between requests
+      - OLLAMA_FLASH_ATTENTION=1
+      # ---- auth (endpoint is global/public — REQUIRE this on every call) ----
+      - KIT_API_KEY=<LONG_RANDOM_SECRET>         # hashtag.org sends this as Bearer / x-api-key
+    expose:
+      - port: 8000                               # the kit's HTTP API
+        as: 443                                  # served on https by the provider
+        to:
+          - global: true                         # public endpoint — reachable by hashtag.org (fixes the CGNAT wall)
+    params:
+      storage:
+        models:
+          mount: /root/.ollama                   # persist pulled weights across restarts/redeploys
+          readOnly: false
+
+profiles:
+  compute:
+    humanizer-kit:
+      resources:
+        cpu:
+          units: 6
+        memory:
+          size: 32Gi
+        storage:
+          - size: 20Gi                           # ephemeral root
+          - name: models
+            size: 100Gi                          # persistent model cache (r11 + judge + HF cache)
+            attributes:
+              persistent: true
+              class: beta2                        # SSD; beta3=NVMe if the provider offers it
+        gpu:
+          units: 1
+          attributes:
+            vendor:
+              nvidia:
+                # PRIMARY: A100 40GB — comfortable for r11 + judge + 6-draft KV cache.
+                - model: a100
+                  ram: 40Gi
+                # FALLBACK: RTX 4090 24GB — cheaper, but tight with two models + 6-way concurrency.
+                - model: rtx4090
+  placement:
+    akash:
+      pricing:
+        humanizer-kit:
+          denom: uakt
+          amount: 100000                          # max bid/block ceiling — tune to current market
+
+deployment:
+  humanizer-kit:
+    akash:
+      profile: humanizer-kit
+      count: 1

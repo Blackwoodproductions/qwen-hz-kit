@@ -1,0 +1,38 @@
+# Modelfile — qwen-hz-node (r11 humanizer, Qwen2.5-7B).
+# Use this when the HF repo ships fp16/safetensors, OR a bare GGUF without a baked-in template/params,
+# so `ollama create` yields a CORRECT model instead of the "word salad" the operator hit on the 4090
+# (the transformers-5 rope_theta importer defaulted the rope base wrong). If GGUF already pulls clean
+# via `ollama pull hf.co/SEOlocal/qwen-hz-node`, you don't need this. If the operator has the exact
+# 4090 Modelfile, prefer that — this is a faithful Qwen2.5-7B reconstruction.
+#
+#   Build:  ollama create qwen-hz-node -f Modelfile
+
+# ── source weights: pick ONE ───────────────────────────────────────────────────────────────────
+# A) GGUF file:        huggingface-cli download SEOlocal/qwen-hz-node *.gguf --local-dir .
+FROM ./qwen-hz-node.gguf
+# B) safetensors/fp16: huggingface-cli download SEOlocal/qwen-hz-node --local-dir ./qwen-hz-node
+# FROM ./qwen-hz-node
+
+# ── Qwen2.5 ChatML template (works with /api/generate's .System + .Prompt) ──────────────────────
+TEMPLATE """{{ if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}<|im_start|>user
+{{ .Prompt }}<|im_end|>
+<|im_start|>assistant
+"""
+
+# minimal fallback system — the kit overrides it per-call with the request's system_prompt
+SYSTEM """You are a helpful assistant."""
+
+# stop at the ChatML turn end + EOS so generation never runs on
+PARAMETER stop "<|im_end|>"
+PARAMETER stop "<|endoftext|>"
+
+# Qwen2.5 context + rope base. rope_frequency_base = Qwen2.5 rope_theta (1e6) — set EXPLICITLY so the
+# importer can't default it wrong (that was the 4090's first-build word-salad bug).
+PARAMETER num_ctx 8192
+PARAMETER rope_frequency_base 1000000
+
+# neutral defaults; the kit varies temperature/seed per draft via its /api/generate options
+PARAMETER temperature 0.7
+PARAMETER top_p 0.95

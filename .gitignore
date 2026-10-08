@@ -1,0 +1,6 @@
+.built
+*.gguf
+qwen-hz-node/
+__pycache__/
+*.pyc
+.env
